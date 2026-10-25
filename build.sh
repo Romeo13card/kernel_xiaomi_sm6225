@@ -2,15 +2,8 @@
 defconfig_path=arch/arm64/configs/vendor/fog_defconfig # Must be edited
 defconfig=vendor/fog_defconfig # Must be edited
 
-#Resukisu
-curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-#KSU ACTIVATION
-echo "CONFIG_KSU=y" >> $defconfig_path
 
-#MANUAL HOOK
-echo "CONFIG_KSU_MANUAL_HOOK=y" >> $defconfig_path
-wget https://raw.githubusercontent.com/xxblebleblexx/manual_hook_fix/refs/heads/main/resuki-4.19-cip-st.patch;wait;patch -p1 < resuki-4.19-cip-st.patch
 
 #Nomount driver
 echo "CONFIG_NOMOUNT=y" >> $defconfig_path
