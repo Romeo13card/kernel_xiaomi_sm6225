@@ -11,18 +11,25 @@ MDIR := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 $(info -- KDIR: $(KDIR))
 $(info -- MDIR: $(MDIR))
 
-# compliant to last upstream kernel change as of 0a1f3ff
-CFLAGS_ksu.o += -DKSU_VERSION=32676
+# compliant to last upstream kernel change as of 665fd96
+CFLAGS_ksu.o += -DKSU_VERSION=32630
 
-KSU_PACKAGE_NAME := me.weishu.kernelsu
+ifndef KSU_EXPECTED_SIZE
 KSU_EXPECTED_SIZE := 0x033b
-KSU_EXPECTED_HASH := c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6
+endif
 
-$(info -- KernelSU Manager package name: $(KSU_PACKAGE_NAME))
+ifndef KSU_EXPECTED_HASH
+KSU_EXPECTED_HASH := c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6
+endif
+
+ifdef KSU_MANAGER_PACKAGE
+CFLAGS_ksu.o += -DKSU_MANAGER_PACKAGE=\"$(KSU_MANAGER_PACKAGE)\"
+$(info -- KernelSU Manager package name: $(KSU_MANAGER_PACKAGE))
+endif
+
 $(info -- KernelSU Manager signature size: $(KSU_EXPECTED_SIZE))
 $(info -- KernelSU Manager signature hash: $(KSU_EXPECTED_HASH))
 
-CFLAGS_ksu.o += -DKSU_PACKAGE_NAME=\"$(KSU_PACKAGE_NAME)\"
 CFLAGS_ksu.o += -DEXPECTED_SIZE=$(KSU_EXPECTED_SIZE)
 CFLAGS_ksu.o += -DEXPECTED_HASH=\"$(KSU_EXPECTED_HASH)\"
 
@@ -59,15 +66,8 @@ $(info -- KernelSU/compat: exported policy_rwlock found!)
 CFLAGS_ksu.o += -DKSU_COMPAT_HAS_EXPORTED_POLICY_RWLOCK
 endif
 
-# branch link hook vfs_statx, this newer version uses struct filename
-ifeq ($(shell grep "int vfs_statx" $(srctree)/fs/stat.c 2>/dev/null | grep -q "struct filename" 2>/dev/null; echo $$?),0)
-# $(info -- KernelSU/compat: vfs_statx has struct filename argument!)
-CFLAGS_ksu.o += -DKSU_HAS_VFS_STATX2
-endif
-
 # branch link hook, do_faccessat
 ifeq ($(shell grep "long do_faccessat" $(srctree)/fs/open.c 2>/dev/null | grep -q "flags" 2>/dev/null; echo $$?),0)
-# $(info -- KernelSU/compat: do_faccessat has flags argument!)
 CFLAGS_ksu.o += -DKSU_HAS_FACCESSAT2
 endif
 

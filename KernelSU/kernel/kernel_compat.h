@@ -30,19 +30,6 @@
 #define WRITE_ONCE(x, y) (*(volatile typeof(x) __may_alias *)&(x) = (typeof(x) __may_alias)(y))
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0) && !defined(smp_store_release)
-#define smp_store_release(p, v) do { smp_mb(); WRITE_ONCE(*p, v); } while (0)
-#endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 5, 0)
-static noinline void ksu_do_nothing(void *unused) { };
-__weak void kick_all_cpus_sync(void)
-{
-	smp_mb();
-	smp_call_function(ksu_do_nothing, NULL, 1);
-}
-#endif
-
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 12, 0)
 static void *ksu_kvmalloc(size_t size, gfp_t flags)
 {
@@ -64,7 +51,7 @@ static void ksu_kvfree(const void *buf)
 #define kvfree ksu_kvfree
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0) // probe_kernel_read
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0)
 __weak long copy_from_kernel_nofault(void *dst, const void *src, size_t size)
 {
 	// https://elixir.bootlin.com/linux/v5.2.21/source/mm/maccess.c#L27
@@ -81,7 +68,7 @@ __weak long copy_from_kernel_nofault(void *dst, const void *src, size_t size)
 }
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0) // probe_user_read
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 8, 0) 
 __weak long copy_from_user_nofault(void *dst, const void __user *src, size_t size)
 {
 	// https://elixir.bootlin.com/linux/v5.8/source/mm/maccess.c#L205
@@ -90,11 +77,9 @@ __weak long copy_from_user_nofault(void *dst, const void __user *src, size_t siz
 
 	set_fs(USER_DS);
 
-	/**
-	 * normally theres an access_ok check here
-	 * but for what we use it, it will always be true. 
-	 * we skip it.
-	 */
+	// normally theres an access_ok check here
+	// but for what we use it, it will always be true.
+	// so we skip it
 	pagefault_disable();
 	ret = __copy_from_user_inatomic(dst, src, size);
 	pagefault_enable();
@@ -127,7 +112,7 @@ static __always_inline long copy_from_user_retry(void *to, const void __user *fr
  */
 static __always_inline long memmove_user(void __user *dst, const void __user *src, size_t count)
 {
-	char *buf __offstack_flags(count, GFP_KERNEL);
+	char *buf __offstack(count);
 	if (!buf)
 		return -ENOMEM;
 
@@ -140,8 +125,8 @@ static __always_inline long memmove_user(void __user *dst, const void __user *sr
 	return 0;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 1, 0)
-#define memzero_explicit(ptr, count) memset_explicit(ptr, 0, count)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 18, 0)
+__weak void memzero_explicit(void *s, size_t count) { memset_explicit(s, 0, count); }
 #endif
 
 #ifdef TIF_SECCOMP
@@ -151,24 +136,27 @@ static __always_inline long memmove_user(void __user *dst, const void __user *sr
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
-static noinline ssize_t ksu_kernel_read_compat(struct file *file, void *buf, size_t count, loff_t *pos)
+// https://elixir.bootlin.com/linux/v4.14.336/source/fs/read_write.c#L418
+// https://elixir.bootlin.com/linux/v4.14.336/source/fs/read_write.c#L512
+static noinline ssize_t ksu_kernel_read_compat(struct file *p, void *buf, size_t count, loff_t *pos)
 {
-	mm_segment_t old_fs = get_fs();
+	mm_segment_t old_fs;
+	old_fs = get_fs();
 	set_fs(get_ds());
-	ssize_t result = vfs_read(file, (void __user *)buf, count, pos);
+	ssize_t result = vfs_read(p, (void __user *)buf, count, pos);
 	set_fs(old_fs);
 	return result;
 }
-#define kernel_read ksu_kernel_read_compat
-
-static noinline ssize_t ksu_kernel_write_compat(struct file *file, const void *buf, size_t count, loff_t *pos)
+static noinline ssize_t ksu_kernel_write_compat(struct file *p, const void *buf, size_t count, loff_t *pos)
 {
-	mm_segment_t old_fs = get_fs();
+	mm_segment_t old_fs;
+	old_fs = get_fs();
 	set_fs(get_ds());
-	ssize_t res = vfs_write(file, (__force const char __user *)buf, count, pos);
+	ssize_t res = vfs_write(p, (__force const char __user *)buf, count, pos);
 	set_fs(old_fs);
 	return res;
 }
+#define kernel_read ksu_kernel_read_compat
 #define kernel_write ksu_kernel_write_compat
 #endif // < 4.14
 
@@ -181,25 +169,19 @@ static noinline ssize_t ksu_kernel_write_compat(struct file *file, const void *b
 #define TWA_RESUME 1
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+#define ksu_close_fd close_fd
+// this is ksys_close, however that is spotty to use, as 5.10 backported close_fd and rekt ksys_close
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0) && LINUX_VERSION_CODE >= KERNEL_VERSION(3, 7, 0)
+#define ksu_close_fd(fd) __close_fd(current->files, fd)
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(3, 7, 0)
+#define ksu_close_fd sys_close
+#endif
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 6, 0)
-static __nocfi struct file *ksu_dentry_open(const struct path *path, int flags, const struct cred *cred)
+static inline struct file *ksu_dentry_open(const struct path *path, int flags, const struct cred *cred)
 {
-	// new type: struct file * dentry_open(const struct path *, int, const struct cred *);
-	extern typeof(dentry_open) dentry_open;
-	if (!__builtin_types_compatible_p(typeof(dentry_open), typeof(ksu_dentry_open)))
-		goto old_fn;
-
-	typeof(ksu_dentry_open) *fn_new = (void *)&dentry_open;
-	return fn_new(path, flags, cred);
-
-old_fn:; // old type: struct file * dentry_open(struct dentry *, struct vfsmount *, int, const struct cred *);
-	struct file *(*fn_old)(struct dentry *, struct vfsmount *, int, const struct cred *) = (void *)&dentry_open;
-	/**
-	 * old dentry_open consumes a reference regardless of failure or success (dput/mntput)
-	 * we have take one before calling it, else it releases caller's reference. see nameidata_to_filp
-	 */
-	path_get((struct path *)path); // unqual
-	return fn_old((*path).dentry, (*path).mnt, flags, cred);
+	return dentry_open((*path).dentry, (*path).mnt, flags, cred);
 }
 #define dentry_open ksu_dentry_open
 #endif
@@ -207,11 +189,11 @@ old_fn:; // old type: struct file * dentry_open(struct dentry *, struct vfsmount
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
 __weak int path_mount(const char *dev_name, struct path *path, const char *type_page, unsigned long flags, void *data_page)
 {
-	char *buf __offstack_flags(PATH_MAX, GFP_KERNEL);
+	char *buf __zoffstack(PATH_MAX);
 	if (!buf)
 		return -ENOMEM;
 
-	char *realpath = d_path(path, buf, PATH_MAX);
+	char *realpath = d_path(path, buf, PATH_MAX - 1);
 	if (IS_ERR(realpath) || realpath == buf)
 		return -ENOENT;
 
@@ -223,12 +205,45 @@ __weak int path_mount(const char *dev_name, struct path *path, const char *type_
 }
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 13, 0) && !defined(replace_fops)
-#define replace_fops(f, fops) do {		\
-	struct file *__file = (f);		\
-	fops_put(__file->f_op);			\
-	BUG_ON(!(__file->f_op = (fops))); 	\
-} while(0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
+__weak int path_umount(struct path *path, int flags)
+{
+	char buf[256] = {0};
+	int ret = -ENOENT;
+
+	char *usermnt = d_path(path, buf, sizeof(buf) - 1);
+	if (IS_ERR(usermnt) || usermnt == buf)
+		goto out;
+
+	mm_segment_t old_fs = get_fs();
+	set_fs(KERNEL_DS);
+
+	// https://github.com/rsuntk/KernelSU/commit/d20f15e
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0)
+	ret = ksys_umount((char __user *)usermnt, flags);
+#else
+	ret = (int)sys_umount((char __user *)usermnt, flags);
+#endif
+
+	set_fs(old_fs);
+
+	// release ref here! user_path_at increases it
+	// then only cleans for itself
+out:
+	path_put(path); 
+	return ret;
+}
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 13, 0)
+#ifndef replace_fops
+#define replace_fops(f, fops) \
+	do {	\
+		struct file *__file = (f); \
+		fops_put(__file->f_op); \
+		BUG_ON(!(__file->f_op = (fops))); \
+	} while(0)
+#endif
 #endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 4, 0) && defined(CONFIG_JUMP_LABEL)
@@ -281,7 +296,7 @@ struct user_arg_ptr {
 
 #ifndef untagged_addr
 #ifdef CONFIG_ARM64
-static __always_inline __s64 ksu_sign_extend64(__u64 value, int index)
+static inline __s64 ksu_sign_extend64(__u64 value, int index)
 {
 	__u8 shift = 63 - index;
 	return (__s64)(value << shift) >> shift;
@@ -331,47 +346,29 @@ no_null_term:
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0) && !defined(strscpy_pad)
-// https://elixir.bootlin.com/linux/v5.2-rc1/source/lib/string.c#L259
 static ssize_t ksu_strscpy_pad(char *dest, const char *src, size_t count)
 {
-	ssize_t written = strscpy(dest, src, count);
-	if (written < 0 || written == count - 1)
-		return written;
-	memset(dest + written + 1, 0, count - written - 1);
-	return written;
+	if (!count)
+		return -E2BIG;
+
+	__builtin_memset(dest, 0, count);
+	return strscpy(dest, src, count);
 }
 #define strscpy_pad ksu_strscpy_pad
-#endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 16, 0)
-// https://elixir.bootlin.com/linux/v3.16/source/lib/string.c#L305
-static char *ksu_strchrnul(const char *s, int c)
-{
-	while (*s && *s != (char)c)
-		s++;
-	return (char *)s;
-}
-#define strchrnul ksu_strchrnul
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 0, 0)
 #define d_is_reg(dentry) S_ISREG((dentry)->d_inode->i_mode)
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 5, 0)
+struct user_struct *ksu_alloc_uid(kuid_t uid) { return alloc_uid(current_user_ns(), uid); }
+#define alloc_uid ksu_alloc_uid
+#endif
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 11, 0) && !defined(KSU_HAS_ITERATE_DIR)
 struct dir_context { const filldir_t actor; loff_t pos; };
-// #define iterate_dir(file, ctx) vfs_readdir(file, (ctx)->actor, ctx)
-static int ksu_iterate_dir(struct file *file, struct dir_context *ctx)
-{
-	extern int vfs_readdir(struct file *file, filldir_t filler, void *buf);
-
-	// torvalds/linux bb6f619b3a49f940d7478112500da312d70866eb
-	ctx->pos = file->f_pos;
-	int ret = vfs_readdir(file, ctx->actor, ctx);
-	file->f_pos = ctx->pos;
-	return ret;
-}
-#define iterate_dir ksu_iterate_dir
+#define iterate_dir(file, ctx) vfs_readdir(file, (ctx)->actor, ctx)
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 18, 0)
@@ -387,7 +384,7 @@ __weak char *bin2hex(char *dst, const void *src, size_t count)
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 9, 0)
-#define file_inode(file) ((file)->f_path.dentry->d_inode)
+#define file_inode(f) ((f)->f_path.dentry->d_inode)
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 1, 0) && !defined(CONFIG_LSM)
@@ -418,7 +415,7 @@ __weak void groups_sort(struct group_info *group_info) { } // no-op
 #endif // < 4.12 && !EPOLLIN
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION (3, 15, 0)
-#define task_ppid_nr(__unused) ({ (pid_t)sys_getppid(); })
+#define task_ppid_nr(a) (pid_t)sys_getppid()
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION (3, 17, 0)
@@ -440,8 +437,10 @@ __weak unsigned long vm_mmap(struct file *file, unsigned long addr, unsigned lon
 }
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION (4, 12, 0) && !defined(ALIGN_DOWN)
+#if LINUX_VERSION_CODE < KERNEL_VERSION (4, 12, 0)
+#ifndef ALIGN_DOWN
 #define ALIGN_DOWN(x, a) __ALIGN_KERNEL((x) - ((a) - 1), (a))
+#endif
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION (3, 9, 0)
@@ -472,46 +471,20 @@ static inline ksu_kuid_t current_uid() { return *(ksu_kuid_t *)(&current_cred()-
 static inline ksu_kuid_t current_euid() { return *(ksu_kuid_t *)(&current_cred()->euid); }
 #endif // < 3.14
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 5, 0)
-static __nocfi struct user_struct *ksu_alloc_uid(uid_t uid)
-{
-	// old: struct user_struct *alloc_uid(struct user_namespace *ns, uid_t uid)
-	// new: struct user_struct *alloc_uid(kuid_t uid)
-	extern typeof(alloc_uid) alloc_uid;
-	if (!__builtin_types_compatible_p(typeof(alloc_uid), struct user_struct *(struct user_namespace *, uid_t)))
-		goto new_fn;
-
-	return ((struct user_struct *(*)(struct user_namespace *, uid_t))&alloc_uid)(current_user_ns(), uid);
-
-new_fn:;
-	/**
-	 * HACK: some kernels does NOT have kuid_t typedef, it wont compile.
-	 * either way uid_t == kuid_t == ksu_kuid_t, so use a dummy struct
-	 * doesn't rly matter, just explicitness, an excuse to use ksu_kuid_t
-	 */
-	struct user_struct *(*fn_new)(ksu_kuid_t uid) = (void *)&alloc_uid;
-	ksu_kuid_t kuid = { .val = uid };
-	return fn_new(kuid);
-}
-#define alloc_uid(kuid) ksu_alloc_uid(ksu_get_uid_t(kuid))
-#endif
-
 #if defined(CONFIG_KEYS) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
 
-#define KEY_SPEC_SESSION_KEYRING	-3	/* - key ID for session-specific keyring */
-#ifdef KEY_DEFER_PERM_CHECK // torvalds/linux 8c0637e950d68933a67f7438f779d79b049b5e5c
-extern key_ref_t lookup_user_key(key_serial_t id, unsigned long lflags, enum key_need_perm need_perm);
-#define KSU_KEY_ALLPERM KEY_DEFER_PERM_CHECK
+// up to 5.1, struct key __rcu *session_keyring; /* keyring inherited over fork */
+// so we need to grab this using rcu_dereference
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
+static inline struct key *ksu_get_current_session_keyring() { return rcu_dereference(current->cred->session_keyring); }
 #else
-extern key_ref_t lookup_user_key(key_serial_t id, unsigned long lflags, key_perm_t perm);
-#define KSU_KEY_ALLPERM 0
+static inline struct key *ksu_get_current_session_keyring() { return rcu_dereference(current->cred->tgcred->session_keyring); }
 #endif
 
-static void ksu_grab_init_session_keyring()
+static noinline void ksu_grab_init_session_keyring()
 {
-	extern int install_session_keyring_to_cred(struct cred *, struct key *);
 	extern bool is_init(const struct cred* cred);
-	extern struct cred* ksu_cred;
+	extern int install_session_keyring_to_cred(struct cred *, struct key *);
 	static struct key *init_session_keyring = nullptr;
 
 	if (init_session_keyring)
@@ -524,11 +497,11 @@ static void ksu_grab_init_session_keyring()
 		return;
 
 	// now we are sure that this is the key we want
-	key_ref_t key_ref = lookup_user_key(KEY_SPEC_SESSION_KEYRING, 0, KSU_KEY_ALLPERM);
-	if (IS_ERR(key_ref))
+	struct key *keyring = ksu_get_current_session_keyring();
+	if (!keyring)
 		return;
 
-	init_session_keyring = key_ref_to_ptr(key_ref);
+	init_session_keyring = key_get(keyring);
 
 	pr_info("%s: init_session_keyring: 0x%lx \n", __func__, (uintptr_t)init_session_keyring);
 	install_session_keyring_to_cred(ksu_cred, init_session_keyring);

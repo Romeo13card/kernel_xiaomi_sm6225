@@ -129,7 +129,7 @@ static noinline int send_sulog_dump(void __user *uptr)
 
 	// index can be a bit late but this doesnt matter in the grand scheme of things.
 	// we'll take the discrepancy, its not as important anyway.
-	void *memory __offstack_flags(SULOG_BUFSIZ, GFP_KERNEL);
+	void *memory __offstack(SULOG_BUFSIZ);
 	if (!memory)
 		return -ENOMEM;
 

@@ -19,8 +19,22 @@
 
 static int ksu_prepare_new_blacklist(uintptr_t blacklist_pptr)
 {
-	static_assert(sizeof(MODULES_TO_BLOCK) > 0);
-	const char *modules = MODULES_TO_BLOCK;
+	static_assert(sizeof(MODULES_TO_BLOCK) != 0);
+	char *hardcoded = MODULES_TO_BLOCK;
+
+	// + 2 for , and \0
+	char *memory __zoffstack(strlen(hardcoded) + strlen(ksu_block_modules) + 2);
+	if (!memory)
+		return -ENOMEM;
+
+	memcpy(memory, hardcoded, strlen(hardcoded));
+
+	if (!!ksu_block_modules[0]) {
+		memory[strlen(hardcoded)] = ',';
+		memcpy(memory + strlen(hardcoded) + 1, ksu_block_modules, strlen(ksu_block_modules));
+	}
+
+	const char *modules = memory;
 	size_t old_len;
 	if (!*(char **)blacklist_pptr)
 		old_len = 0;
@@ -128,7 +142,6 @@ static noinline void ksu_extend_module_blacklist()
 		pr_info("module_blackist: operation failed! ret: %d \n", ret);
 
 	ksu_hook_syscall_init_module();
-
 	return;
 }
 

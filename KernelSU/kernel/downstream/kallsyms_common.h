@@ -46,7 +46,7 @@ static inline void *old_kvrealloc(const void *p, size_t oldsize, size_t newsize,
 	newp = kvmalloc(newsize, flags);
 	if (!newp)
 		return nullptr;
-	memcpy(newp, p, oldsize);
+	__builtin_memcpy(newp, p, oldsize);
 	kvfree(p);
 	return newp;
 }
@@ -139,7 +139,10 @@ static noinline void dotted_kallsyms_build_hash_array(void)
 
 	cond_resched();
 
-	char *membuf __offstack(KSYM_SYMBOL_LEN * 2);
+	char *membuf __zoffstack(KSYM_SYMBOL_LEN * 2);
+	if (!membuf)
+		return;
+
 	char *symbol_buf = membuf;
 	char *symbol_cache = membuf + KSYM_SYMBOL_LEN;
 
@@ -311,14 +314,18 @@ fn_ok:;
 }
 
 #ifdef CONFIG_KPROBES // kprobes based symbol resolver.
-static uintptr_t kp_kallsyms_lookup_name(const char *name)
+static inline uintptr_t kp_kallsyms_lookup_name(const char *name)
 {
-	struct kprobe kp = { .symbol_name = name };
-	if (!!register_kprobe(&kp))
+	struct kprobe *kp __zoffstack(sizeof(*kp));
+	if (!kp)
 		return 0x0;
 
-	uintptr_t addr = (uintptr_t)kp.addr;
-	unregister_kprobe(&kp);
+	kp->symbol_name = name;
+	if (!!register_kprobe(kp))
+		return 0x0;
+
+	uintptr_t addr = (uintptr_t)kp->addr;
+	unregister_kprobe(kp);
 
 	pr_info("%s: success! %s at 0x%lx\n", __func__, name, addr);
 	return addr;
@@ -433,8 +440,8 @@ static noinline void dotted_kallsyms_destroy_hash_array(void)
 	kallsyms_hash_array_entry_count = 0;
 	kallsyms_hash_array_capacity = 0;
 
-	constexpr char hw[] = "Hello, world!";
-	pr_info("chibihash64: '%s' #: 0x%llx \n", hw, chibihash64(hw, sizeof(hw) - 1, 0ULL));
+	const char *hw = "Hello, world!";
+	pr_info("chibihash64: '%s' #: 0x%llx \n", hw, chibihash64_wrapper(hw));
 
 }
 

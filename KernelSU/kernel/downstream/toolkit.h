@@ -131,10 +131,10 @@ change_spoof_uname:
 		pr_info("toolkit: original uname saved: %s %s\n", original_release_buf, original_version_buf);
 	}
 
-	constexpr char d[] = "default";
-	if (!memcmp_inline(release_buf, d, sizeof(d)))
+	// so user can reset
+	if (!strcmp(release_buf, "default"))
 		memcpy(release_buf, original_release_buf, sizeof(release_buf));
-	if (!memcmp_inline(version_buf, d, sizeof(d)))
+	if (!strcmp(version_buf, "default"))
 		memcpy(version_buf, original_version_buf, sizeof(version_buf));
 
 	pr_info("toolkit: spoofing kernel to: %s - %s\n", release_buf, version_buf);
