@@ -62,6 +62,10 @@
 #include <linux/oom.h>
 #include <linux/compat.h>
 #include <linux/vmalloc.h>
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs_def.h>
+#include <linux/jump_label.h>
+#endif
 
 #include <linux/uaccess.h>
 #include <asm/mmu_context.h>
@@ -1732,6 +1736,13 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
 			       void *argv, void *envp, int *flags);
 extern int ksu_handle_post_execveat(int *fd, struct filename **filename_ptr,
 				    void *argv, void *envp, int *flags, int *retval);
+#elif defined(CONFIG_KSU_SUSFS)
+extern struct static_key_true ksu_su_compat_enabled;
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+			       void *argv, void *envp, int *flags);
+extern int ksu_handle_post_execveat_sucompat(int *fd,
+		struct filename **filename_ptr, void *argv, void *envp,
+		int *flags, int *retval);
 #endif
 
 static int __do_execve_file(int fd, struct filename *filename,
@@ -1873,6 +1884,11 @@ static int __do_execve_file(int fd, struct filename *filename,
 	if (filename && !IS_ERR(filename))
 		ksu_handle_post_execveat(&fd, &filename, &argv, &envp,
 					 &flags, &retval);
+#elif defined(CONFIG_KSU_SUSFS)
+	/* __do_execve_file() still owns filename here: no use-after-free. */
+	if (filename && !IS_ERR(filename))
+		(void)ksu_handle_post_execveat_sucompat(&fd, &filename,
+						 &argv, &envp, &flags, &retval);
 #endif
 	if (filename)
 		putname(filename);
@@ -1901,6 +1917,11 @@ out_ret:
 	if (filename && !IS_ERR(filename))
 		ksu_handle_post_execveat(&fd, &filename, &argv, &envp,
 					 &flags, &retval);
+#elif defined(CONFIG_KSU_SUSFS)
+	/* __do_execve_file() still owns filename here: no use-after-free. */
+	if (filename && !IS_ERR(filename))
+		(void)ksu_handle_post_execveat_sucompat(&fd, &filename,
+						 &argv, &envp, &flags, &retval);
 #endif
 	if (filename)
 		putname(filename);
@@ -1916,6 +1937,10 @@ static int do_execveat_common(int fd, struct filename *filename,
 {
 #ifdef CONFIG_KSU_MANUAL_HOOK
 	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+#elif defined(CONFIG_KSU_SUSFS)
+	if (!IS_ERR(filename) && !susfs_is_current_proc_no_su() &&
+	    static_branch_likely(&ksu_su_compat_enabled))
+		(void)ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
 #endif
 	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
 }
