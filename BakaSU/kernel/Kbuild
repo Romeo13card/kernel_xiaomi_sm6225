@@ -26,6 +26,8 @@ kernelsu-objs += infra/event_queue.o
 kernelsu-objs += runtime/boot_event.o
 kernelsu-objs += runtime/ksud_integration.o
 
+kernelsu-objs += infra/btf_parser.o
+kernelsu-objs += selinux/inode.o
 kernelsu-objs += selinux/selinux.o
 kernelsu-objs += selinux/sepolicy.o
 kernelsu-objs += selinux/rules.o
@@ -82,11 +84,11 @@ KSU_COMMIT_SHA  := $(KSU_COMMIT_SHA)-dirty
 endif
 KSU_BRANCH_NAME := $(shell cd $(KSU_SRC); $(GIT_BIN) branch --show-current 2>/dev/null || echo "unknown")
 else
-# Vendored BakaSU snapshot: d5e9e025
+# Vendored BakaSU snapshot: 516d3e87
 # Update these values when updating BakaSU sources.
-KSU_VERSION := 35252
+KSU_VERSION := 35257
 KSU_TAG_NAME := v4.2.0-rc3
-KSU_COMMIT_SHA := d5e9e025
+KSU_COMMIT_SHA := 516d3e87
 KSU_BRANCH_NAME := vendored
 endif
 
