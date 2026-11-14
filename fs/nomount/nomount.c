@@ -22,13 +22,16 @@ static __always_inline bool nm_is_uid_blocked(uid_t target_uid)
     if (likely(!rcu_access_pointer(nm_uids)))
         return false;
 
-    rcu_guard();
+    rcu_read_lock();
     if ((arr = rcu_dereference(nm_uids)) && nm_uid_bloom_test(arr, target_uid)) {
         for (int i = 0; i < arr->count; i++) {
-            if (arr->uids[i] == target_uid)
+            if (arr->uids[i] == target_uid) {
+                rcu_read_unlock();
                 return true;
+            }
         }
     }
+    rcu_read_unlock();
     return false;
 }
 
@@ -180,10 +183,15 @@ static NM_ACTOR_RET nm_actor_proxy(struct dir_context *ctx, const char *name, in
     NM_ACTOR_RET ret;
 
     {
-        rcu_guard();
-        struct nm_leaf *leaf = nm_find_leaf_in_dir(proxy->dir_node, name, namelen);
-        struct nm_rule *rule = leaf ? nm_select_rule(leaf, proxy->fsuid) : NULL;
-        if (unlikely(rule && (!proxy->native_view || nm_rule_needs_readdir(leaf, rule)))) {
+        struct nm_leaf *leaf;
+        struct nm_rule *rule;
+        bool skip;
+        rcu_read_lock();
+        leaf = nm_find_leaf_in_dir(proxy->dir_node, name, namelen);
+        rule = leaf ? nm_select_rule(leaf, proxy->fsuid) : NULL;
+        skip = unlikely(rule && (!proxy->native_view || nm_rule_needs_readdir(leaf, rule)));
+        rcu_read_unlock();
+        if (skip) {
             proxy->ctx.pos = offset;
             return NM_ACTOR_CONTINUE;
         }
@@ -1411,9 +1419,9 @@ static void nm_retire_leaf_locked(struct nm_leaf *leaf)
     else schedule_work(&nm_reclaim_work);
 }
 
-static void nm_prepare_native_file(struct nm_leaf *leaf, struct nm_dir_node *dir_node, struct dentry *parent)
+static void nm_prepare_native_file(struct nm_leaf *leaf, struct nm_dir_node *dir_node, const struct path *parent, const char *name)
 {
-    switch (parent->d_sb->s_magic) {
+    switch (parent->dentry->d_sb->s_magic) {
 #if defined(EROFS_SUPER_MAGIC_V1) && BITS_PER_LONG == 64
     case EROFS_SUPER_MAGIC_V1:
 #endif
@@ -1427,9 +1435,9 @@ static void nm_prepare_native_file(struct nm_leaf *leaf, struct nm_dir_node *dir
     struct path path;
 
     if (dir_node->owner || rule->flags || !S_ISREG(d_backing_inode(rule->r_path.dentry)->i_mode)) return;
-    if (kern_path(leaf->paths, 0, &path)) return;
+    if (vfs_path_lookup(parent->dentry, parent->mnt, name, 0, &path)) return;
     struct inode *inode = d_backing_inode(path.dentry);
-    if (path.dentry->d_parent == parent && S_ISREG(inode->i_mode) && inode->i_nlink == 1) {
+    if (path.dentry->d_parent == parent->dentry && S_ISREG(inode->i_mode) && inode->i_nlink == 1) {
         leaf->v_ino = inode->i_ino;
         leaf->native_file = true;
     }
@@ -1485,7 +1493,7 @@ static int nm_generate_virtual_topology(struct nm_leaf *target, unsigned int uid
                 if (!dir) err = -ENOMEM;
             }
             if (!err && !virtual) {
-                nm_prepare_native_file(child, dir, path.dentry);
+                nm_prepare_native_file(child, dir, &path, name);
                 err = nm_hijack_dir_ops(dir, inode);
             }
             if (!err && !(err = nm_inject_child_locked(dir, child, name, name_len))) {
@@ -1883,7 +1891,7 @@ static int nm_process_payload(unsigned long user_addr)
             buf_ptr = payload->buffer;
             buf_end = payload->buffer + sizeof(payload->buffer);
 
-            rcu_guard();
+            rcu_read_lock();
             struct nm_leaf *leaf;
             hash_for_each_rcu(nm_leaves_ht, bkt, leaf, ht_node) {
                 struct nm_rule_array *rules = rcu_dereference(leaf->rules);
@@ -1905,6 +1913,7 @@ static int nm_process_payload(unsigned long user_addr)
                 }
             }
         list_done:
+            rcu_read_unlock();
             payload->data_size = buf_ptr - payload->buffer;
             payload->arg1 = current_idx;
             break;
@@ -1916,12 +1925,13 @@ static int nm_process_payload(unsigned long user_addr)
             struct nm_uid_array *arr;
             int count = 0;
 
-            rcu_guard();
+            rcu_read_lock();
             if ((arr = rcu_dereference(nm_uids))) {
                 while (start_idx < arr->count && count < (sizeof(payload->buffer) / sizeof(*out))) {
                     out[count++] = arr->uids[start_idx++];
                 }
             }
+            rcu_read_unlock();
             payload->data_size = count * sizeof(*out);
             payload->arg1 = start_idx;
             break;
